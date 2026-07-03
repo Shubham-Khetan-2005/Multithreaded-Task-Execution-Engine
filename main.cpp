@@ -1,33 +1,61 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <atomic>
-#include <chrono> // Used just to simulate idling for today
+#include <chrono> 
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 
 class TaskEngine {
 private:
-    // 1. The container for our worker threads
+    // The container for our worker threads
     std::vector<std::thread> workers;
-    
-    // 2. A thread-safe boolean to tell workers when to exit their infinite loops
-    std::atomic<bool> stop_flag;
 
-    // 3. The infinite loop every thread will run
+    // The Queue: Stores simple void functions
+    std::queue<std::function<void()>> tasks;
+    
+    // The Synchronization Primitives
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    
+    // A thread-safe boolean to tell workers when to exit their infinite loops
+    bool stop_flag;
+
+    // The infinite loop every thread will run
     void worker_loop(int thread_id) {
-        std::cout << "Worker " << thread_id << " is online and waiting...\n";
+        std::cout << "Worker " << thread_id << " is online and sleeping...\n";
         
-        while (!stop_flag) {
-            // WARNING: This is a "busy wait". It wastes CPU cycles.
-            // We will fix this in Day 2 using std::condition_variable.
-            // For today, we use a small sleep so it doesn't melt your processor.
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        while (true) {
+            std::function<void()> task;
+            
+            { // --- CRITICAL SECTION START ---
+                std::unique_lock<std::mutex> lock(queue_mutex);
+                
+                // The thread goes to sleep right here! 
+                // It only wakes up IF: stop_flag is true OR tasks queue is not empty
+                condition.wait(lock, [this] { 
+                    return stop_flag || !tasks.empty(); 
+                });
+
+                // If the engine is shutting down and all tasks are done, break the loop
+                if (stop_flag && tasks.empty()) {
+                    std::cout << "Worker " << thread_id << " shutting down.\n";
+                    return; 
+                }
+
+                // Grab the task off the front of the queue
+                task = std::move(tasks.front());
+                tasks.pop();
+            } // --- CRITICAL SECTION END (Lock is automatically released!) ---
+            
+            // Execute the task outside the lock so other threads can still access the queue
+            task(); 
         }
-        
-        std::cout << "Worker " << thread_id << " is shutting down.\n";
     }
 
 public:
-    // 4. Constructor: Spin up the threads
+    // Constructor: Spin up the threads
     TaskEngine(size_t num_threads) : stop_flag(false) {
         std::cout << "Booting Engine with " << num_threads << " threads...\n";
         
@@ -43,17 +71,29 @@ public:
     ~TaskEngine() {
         std::cout << "\nInitiating Engine Shutdown...\n";
         
-        // Flip the switch. All threads will exit their while loops.
-        stop_flag = true;
-        
-        // Wait for every thread to finish its current loop iteration and terminate.
-        for (std::thread& worker : workers) {
-            if (worker.joinable()) {
-                worker.join(); // Blocks the main thread until 'worker' finishes
-            }
+        { // Lock the queue to safely flip the stop flag
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            stop_flag = true;
         }
         
-        std::cout << "All workers joined. Engine shutdown complete.\n";
+        // BUZZER: Wake up ALL sleeping threads so they can see the stop_flag is true
+        condition.notify_all(); 
+
+        for (std::thread& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        std::cout << "Engine shutdown complete.\n";
+    }
+
+    void submit_void_task(std::function<void()> task) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            tasks.push(task);
+        }
+        // BUZZER: Wake up EXACTLY ONE sleeping thread to process this new task
+        condition.notify_one(); 
     }
 };
 
@@ -62,10 +102,18 @@ int main() {
         // Scope block to test the constructor and destructor
         TaskEngine engine(4);
         
-        // Let the main thread sleep for a second to watch the workers run
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // Let's submit 8 simulated heavy calculations to the engine
+        for(int i = 1; i <= 8; i++) {
+            engine.submit_void_task([i]() {
+                std::cout << "Executing task " << i << " on thread " << std::this_thread::get_id() << "\n";
+                // Simulate a heavy task taking 500ms
+                std::this_thread::sleep_for(std::chrono::milliseconds(500)); 
+            });
+        }
         
-    } // The engine object goes out of scope here, triggering the destructor automatically!
+        // Pause the main thread for 3 seconds to let the workers finish cooking
+        std::this_thread::sleep_for(std::chrono::seconds(3));
 
     return 0;
+    }
 }
