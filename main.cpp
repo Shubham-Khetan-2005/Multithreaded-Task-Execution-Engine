@@ -6,6 +6,20 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
+#include <queue>
+
+struct PriorityTask {
+    int priority;
+    std::function<void()> task;
+
+    // C++ priority_queue is a Max-Heap. It naturally puts the "largest" element at the top.
+    // We must teach it how to compare two PriorityTask tickets.
+    bool operator<(const PriorityTask& other) const {
+        // A lower number means lower priority.
+        // If this ticket has a smaller priority than the 'other' ticket, return true.
+        return this->priority < other.priority;
+    }
+};
 
 class TaskEngine {
 private:
@@ -13,7 +27,7 @@ private:
     std::vector<std::thread> workers;
 
     // The Queue: Stores simple void functions
-    std::queue<std::function<void()>> tasks;
+    std::priority_queue<PriorityTask> tasks;
     
     // The Synchronization Primitives
     std::mutex queue_mutex;
@@ -27,7 +41,7 @@ private:
         std::cout << "Worker " << thread_id << " is online and sleeping...\n";
         
         while (true) {
-            std::function<void()> task;
+            std::function<void()> current_task;
             
             { // --- CRITICAL SECTION START ---
                 std::unique_lock<std::mutex> lock(queue_mutex);
@@ -44,13 +58,16 @@ private:
                     return; 
                 }
 
-                // Grab the task off the front of the queue
-                task = std::move(tasks.front());
+                // Grab the VIP task off the top of the heap
+                // priority_queue uses .top() instead of .front()
+                current_task = tasks.top().task;
+                
+                // Remove the ticket from the rack
                 tasks.pop();
             } // --- CRITICAL SECTION END (Lock is automatically released!) ---
             
             // Execute the task outside the lock so other threads can still access the queue
-            task(); 
+            current_task(); 
         }
     }
 
@@ -87,12 +104,20 @@ public:
         std::cout << "Engine shutdown complete.\n";
     }
 
-    void submit_void_task(std::function<void()> task) {
+    void submit_task(int priority_level, std::function<void()> task) {
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
-            tasks.push(task);
+            
+            // Wrap the function and its priority into our new data package
+            PriorityTask new_ticket;
+            new_ticket.priority = priority_level;
+            new_ticket.task = std::move(task);
+            
+            // Push it to the magic rack (it sorts itself automatically!)
+            tasks.push(new_ticket);
         }
-        // BUZZER: Wake up EXACTLY ONE sleeping thread to process this new task
+        
+        // Wake up a chef
         condition.notify_one(); 
     }
 };
@@ -103,16 +128,23 @@ int main() {
         TaskEngine engine(4);
         
         // Let's submit 8 simulated heavy calculations to the engine
-        for(int i = 1; i <= 8; i++) {
-            engine.submit_void_task([i]() {
-                std::cout << "Executing task " << i << " on thread " << std::this_thread::get_id() << "\n";
-                // Simulate a heavy task taking 500ms
-                std::this_thread::sleep_for(std::chrono::milliseconds(500)); 
+        for(int i = 1; i <= 5; i++) {
+            engine.submit_task(1, [i]() {
+                std::cout << "[Priority 1] Executing task " << i << "\n";
+                // Simulating a fast task
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
             });
         }
         
-        // Pause the main thread for 3 seconds to let the workers finish cooking
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        // The manager immediately submits a high-priority VIP Steak (priority 100)
+        engine.submit_task(100, []() {
+            std::cout << ">>> [Priority 100] Executing VIP task <<<\n";
+            // Simulating a heavy task
+            std::this_thread::sleep_for(std::chrono::milliseconds(300)); 
+        });
+
+        // Wait for everything to cook before destroying the engine
+        std::this_thread::sleep_for(std::chrono::seconds(2));
 
     return 0;
     }
