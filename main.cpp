@@ -7,6 +7,9 @@
 #include <condition_variable>
 #include <functional>
 #include <queue>
+#include <future> 
+#include <memory> 
+#include <type_traits>
 
 struct PriorityTask {
     int priority;
@@ -104,48 +107,64 @@ public:
         std::cout << "Engine shutdown complete.\n";
     }
 
-    void submit_task(int priority_level, std::function<void()> task) {
+    template<typename F, typename... Args>
+    auto submit(int priority, F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>> {
+        
+        // Figure out what type of answer this function will return (e.g., int, string)
+        using return_type = std::invoke_result_t<F, Args...>;
+
+        // Create the Lockbox (packaged_task)
+        // std::bind glues the function and its arguments together
+        auto lockbox = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+
+        // Grab the buzzer from the lockbox to give to the customer
+        std::future<return_type> buzzer = lockbox->get_future();
+
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
             
-            // Wrap the function and its priority into our new data package
             PriorityTask new_ticket;
-            new_ticket.priority = priority_level;
-            new_ticket.task = std::move(task);
+            new_ticket.priority = priority;
             
-            // Push it to the magic rack (it sorts itself automatically!)
+            // Type Erasure: We wrap the complex lockbox inside a simple void() lambda.
+            // The magic rack only sees a void function, keeping it happy.
+            new_ticket.task = [lockbox]() {
+                (*lockbox)(); 
+            };
+            
             tasks.push(new_ticket);
         }
         
-        // Wake up a chef
         condition.notify_one(); 
+        
+        // Return the buzzer immediately, long before the chef finishes cooking
+        return buzzer;
     }
 };
 
 int main() {
-    {
-        // Scope block to test the constructor and destructor
-        TaskEngine engine(4);
-        
-        // Let's submit 8 simulated heavy calculations to the engine
-        for(int i = 1; i <= 5; i++) {
-            engine.submit_task(1, [i]() {
-                std::cout << "[Priority 1] Executing task " << i << "\n";
-                // Simulating a fast task
-                std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
-            });
-        }
-        
-        // The manager immediately submits a high-priority VIP Steak (priority 100)
-        engine.submit_task(100, []() {
-            std::cout << ">>> [Priority 100] Executing VIP task <<<\n";
-            // Simulating a heavy task
-            std::this_thread::sleep_for(std::chrono::milliseconds(300)); 
-        });
+    TaskEngine engine(4);
+    
+    std::cout << "Submitting a math calculation to the engine...\n";
 
-        // Wait for everything to cook before destroying the engine
+    // We submit a function that multiplies two numbers and takes some time
+    auto math_buzzer = engine.submit(10, [](int a, int b) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
+        return a * b;
+    }, 125, 40);
+
+    // Notice how the main thread is NOT frozen! It keeps running.
+    std::cout << "Manager is taking other orders while the chef calculates...\n";
+    std::cout << "Manager is cleaning the front desk...\n";
+
+    // Now we absolutely need the answer. We press the buzzer.
+    // If the chef isn't done, the program pauses right here.
+    std::cout << "Waiting for the math result...\n";
+    int final_answer = math_buzzer.get();
+
+    std::cout << "The chef returned the answer: " << final_answer << "\n";
 
     return 0;
-    }
 }
