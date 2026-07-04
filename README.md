@@ -89,23 +89,21 @@ multithreaded-task-engine/
 ### Build
 
 ```bash
-git clone [Repo](https://github.com/Shubham-Khetan-2005/Multithreaded-Task-Execution-Engine.git)
+git clone https://github.com/Shubham-Khetan-2005/Multithreaded-Task-Execution-Engine.git
 cd multithreaded-task-engine
 
-mkdir build
-cd build
+# Generate build files
+mkdir build && cd build
+cmake ..
 
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build .
-```
+# Compile the executables
+make
 
-The build generates:
-
-```text
-basic_usage
-web_scraper
-unit_tests
-benchmark
+# Run the test suite and benchmarks
+./basic_usage
+./unit_tests
+./benchmark
+./web_scraper
 ```
 
 ## Usage
