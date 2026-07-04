@@ -33,3 +33,7 @@ target_link_libraries(basic_usage PRIVATE Threads::Threads)
 # Target 3: The Concurrent Web Scraper Example
 add_executable(web_scraper src/examples/web_scraper.cpp)
 target_link_libraries(web_scraper PRIVATE Threads::Threads)
+
+# Target 4: Unit Test Suite
+add_executable(unit_tests tests/unit_tests.cpp)
+target_link_libraries(unit_tests PRIVATE Threads::Threads)
